@@ -97,17 +97,20 @@
 </div>
 
 <div class="controls">
-  <input type="text" id="apiUrl" placeholder="Backend URL (e.g. https://black-falcon-backend.onrender.com)">
   <button id="startBtn">📷 კამერის ჩართვა</button>
   <button id="clearBtn">✖ მონიშვნის მოხსნა</button>
 </div>
 
 <div class="status" id="status">
-  1. ჩაწერე backend-ის URL &nbsp;→&nbsp; 2. ჩართე კამერა &nbsp;→&nbsp; 3. დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს
+  1. ჩართე კამერა &nbsp;→&nbsp; 2. დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს
 </div>
 <div class="legend">🟩 ყველა აღმოჩენილი ობიექტი &nbsp;&nbsp; 🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა</div>
 
 <script>
+// Backend API URL — hardcoded so the demo works without any setup.
+// Change this if you redeploy the backend under a different address.
+const API_URL = 'https://black-falcon-track.onrender.com';
+
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
@@ -115,7 +118,6 @@ const stage = document.getElementById('stage');
 const startBtn = document.getElementById('startBtn');
 const clearBtn = document.getElementById('clearBtn');
 const statusEl = document.getElementById('status');
-const apiUrlInput = document.getElementById('apiUrl');
 
 let streaming = false;
 let selected = null;         // last known box {x1,y1,x2,y2,class_name} of tracked object
@@ -125,8 +127,6 @@ let isLost = false;          // true when we couldn't re-match this frame
 let lastDetections = [];
 let pollTimer = null;
 
-apiUrlInput.value = localStorage.getItem('bf_api_url') || '';
-
 function resizeCanvas() {
   canvas.width = stage.clientWidth;
   canvas.height = stage.clientHeight;
@@ -134,11 +134,6 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 
 startBtn.onclick = async () => {
-  if (!apiUrlInput.value.trim()) {
-    statusEl.textContent = '⚠️ ჯერ ჩაწერე backend-ის URL';
-    return;
-  }
-  localStorage.setItem('bf_api_url', apiUrlInput.value.trim());
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment' }
@@ -216,7 +211,7 @@ async function captureAndSend() {
   form.append('file', blob, 'frame.jpg');
 
   try {
-    const base = apiUrlInput.value.trim().replace(/\/$/, '');
+    const base = API_URL.replace(/\/$/, '');
     const res = await fetch(`${base}/detect`, { method: 'POST', body: form });
     const data = await res.json();
     lastDetections = data.detections || [];
