@@ -39,7 +39,9 @@ export default function App() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [imgSize, setImgSize] = useState({ w: 1, h: 1 });
   const [selectedCentroid, setSelectedCentroid] = useState<{ x: number; y: number } | null>(null);
+  const [selectedSize, setSelectedSize] = useState<{ w: number; h: number } | null>(null);
   const [tracked, setTracked] = useState<Detection | null>(null);
+  const [isLost, setIsLost] = useState(false);
   const [status, setStatus] = useState("ჩაწერე backend URL და დააჭირე Start-ს");
 
   const captureLoop = useCallback(async () => {
@@ -66,25 +68,39 @@ export default function App() {
       setDetections(data.detections || []);
       setImgSize({ w: data.image_width, h: data.image_height });
 
-      if (selectedCentroid && data.detections?.length) {
+      if (selectedCentroid) {
+        const sizeBasis = selectedSize ? Math.max(selectedSize.w, selectedSize.h) : 0;
+        const maxJump = Math.max(sizeBasis * 3, Math.max(data.image_width, data.image_height) * 0.2);
+
         let best: Detection | null = null;
-        let bestDist = Infinity;
-        for (const d of data.detections as Detection[]) {
+        let bestScore = Infinity;
+        for (const d of (data.detections || []) as Detection[]) {
           const cx = (d.x1 + d.x2) / 2;
           const cy = (d.y1 + d.y2) / 2;
           const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
-          if (dist < bestDist) { bestDist = dist; best = d; }
+          if (dist > maxJump) continue;
+          const classPenalty = (tracked && d.class_name === tracked.class_name) ? 0 : maxJump * 0.3;
+          const score = dist + classPenalty;
+          if (score < bestScore) { bestScore = score; best = d; }
         }
-        const maxJump = Math.max(data.image_width, data.image_height) * 0.25;
-        if (best && bestDist < maxJump) {
+
+        if (best) {
+          // 🟢 FOUND
           setTracked(best);
           setSelectedCentroid({ x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 });
+          setSelectedSize({ w: best.x2 - best.x1, h: best.y2 - best.y1 });
+          setIsLost(false);
+          setStatus(`🟢 ვხედავთ: ${best.class_name}`);
+        } else {
+          // 🔴 LOST — keep last known box, don't move it
+          setIsLost(true);
+          setStatus("🔴 ობიექტი დაიკარგა — ვეძებ...");
         }
       }
     } catch (e) {
       setStatus("⚠️ backend-თან კავშირის შეცდომა");
     }
-  }, [apiUrl, selectedCentroid]);
+  }, [apiUrl, selectedCentroid, selectedSize, tracked]);
 
   useEffect(() => {
     if (!running) return;
@@ -126,7 +142,9 @@ export default function App() {
     if (best) {
       setTracked(best);
       setSelectedCentroid({ x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 });
-      setStatus(`მონიშნულია: ${best.class_name}`);
+      setSelectedSize({ w: best.x2 - best.x1, h: best.y2 - best.y1 });
+      setIsLost(false);
+      setStatus(`🟢 მონიშნულია: ${best.class_name}`);
     }
   }
 
@@ -160,7 +178,9 @@ export default function App() {
               <Rect
                 x={tracked.x1 * sx} y={tracked.y1 * sy}
                 width={(tracked.x2 - tracked.x1) * sx} height={(tracked.y2 - tracked.y1) * sy}
-                stroke="#ff5c5c" strokeWidth={3} fill="none"
+                stroke={isLost ? "#ff5c5c" : "#2ecc71"}
+                strokeDasharray={isLost ? "8,6" : undefined}
+                strokeWidth={3} fill="none"
               />
             )}
           </Svg>
@@ -176,7 +196,15 @@ export default function App() {
         >
           <Text style={styles.btnText}>{running ? "⏸ გაჩერება" : "▶ დაწყება"}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.btn} onPress={() => { setTracked(null); setSelectedCentroid(null); }}>
+        <TouchableOpacity
+          style={styles.btn}
+          onPress={() => {
+            setTracked(null);
+            setSelectedCentroid(null);
+            setSelectedSize(null);
+            setIsLost(false);
+          }}
+        >
           <Text style={styles.btnText}>✖ მონიშვნის მოხსნა</Text>
         </TouchableOpacity>
       </View>
