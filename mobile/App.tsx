@@ -15,7 +15,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  TextInput,
   Dimensions,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -23,6 +22,10 @@ import Svg, { Rect, Text as SvgText } from "react-native-svg";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const STAGE_H = (SCREEN_W * 3) / 4;
+
+// Backend API URL — hardcoded so the app works without any setup.
+// Change this if you redeploy the backend under a different address.
+const API_URL = "https://black-falcon-track.onrender.com";
 
 type Detection = {
   class_name: string;
@@ -34,7 +37,6 @@ export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
 
-  const [apiUrl, setApiUrl] = useState("");
   const [running, setRunning] = useState(false);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [imgSize, setImgSize] = useState({ w: 1, h: 1 });
@@ -45,7 +47,7 @@ export default function App() {
   const [status, setStatus] = useState("ჩაწერე backend URL და დააჭირე Start-ს");
 
   const captureLoop = useCallback(async () => {
-    if (!cameraRef.current || !apiUrl) return;
+    if (!cameraRef.current) return;
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
@@ -61,7 +63,7 @@ export default function App() {
         type: "image/jpeg",
       } as any);
 
-      const base = apiUrl.replace(/\/$/, "");
+      const base = API_URL.replace(/\/$/, "");
       const res = await fetch(`${base}/detect`, { method: "POST", body: form });
       const data = await res.json();
 
@@ -100,7 +102,7 @@ export default function App() {
     } catch (e) {
       setStatus("⚠️ backend-თან კავშირის შეცდომა");
     }
-  }, [apiUrl, selectedCentroid, selectedSize, tracked]);
+  }, [selectedCentroid, selectedSize, tracked]);
 
   useEffect(() => {
     if (!running) return;
@@ -151,15 +153,6 @@ export default function App() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>BLACK <Text style={{ color: "#ff5c5c" }}>FALCON</Text></Text>
-
-      <TextInput
-        style={styles.input}
-        placeholder="Backend URL (https://...)"
-        placeholderTextColor="#7d8590"
-        value={apiUrl}
-        onChangeText={setApiUrl}
-        autoCapitalize="none"
-      />
 
       <View style={{ width: SCREEN_W, height: STAGE_H }}>
         <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
