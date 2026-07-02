@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Black Falcon",
+    "slug": "black-falcon-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "საჭიროა კამერაზე წვდომა ობიექტების ამოსაცნობად და თრექინგისთვის."
+      }
+    },
+    "android": {
+      "package": "com.zenjaiani.blackfalcon",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "საჭიროა კამერაზე წვდომა ობიექტების ამოსაცნობად და თრექინგისთვის."
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLACK FALCON — Visual Tracking Demo</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --panel: #121821;
+    --accent: #ff5c5c;
+    --accent2: #4dd0ff;
+    --text: #e6edf3;
+    --muted: #7d8590;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 {
+    font-size: 20px;
+    letter-spacing: 2px;
+    margin: 0 0 4px 0;
+  }
+  h1 span { color: var(--accent); }
+  .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+  .stage {
+    position: relative;
+    width: min(720px, 95vw);
+    aspect-ratio: 4 / 3;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #232b36;
+  }
+  video, canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  canvas { pointer-events: auto; }
+  .controls {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button, input[type=text] {
+    background: var(--panel);
+    border: 1px solid #232b36;
+    color: var(--text);
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent2); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+  input[type=text] { width: 280px; cursor: text; }
+  .status {
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    max-width: 600px;
+  }
+  .status b { color: var(--accent2); }
+  .legend {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<h1>BLACK <span>FALCON</span></h1>
+<div class="subtitle">Visual Object Detection &amp; Tracking — Demo</div>
+
+<div class="stage" id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div class="controls">
+  <input type="text" id="apiUrl" placeholder="Backend URL (e.g. https://black-falcon-backend.onrender.com)">
+  <button id="startBtn">📷 კამერის ჩართვა</button>
+  <button id="clearBtn">✖ მონიშვნის მოხსნა</button>
+</div>
+
+<div class="status" id="status">
+  1. ჩაწერე backend-ის URL &nbsp;→&nbsp; 2. ჩართე კამერა &nbsp;→&nbsp; 3. დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს
+</div>
+<div class="legend">🟩 ყველა აღმოჩენილი ობიექტი &nbsp;&nbsp; 🟥 მონიშნული / თრექირებული ობიექტი</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const stage = document.getElementById('stage');
+const startBtn = document.getElementById('startBtn');
+const clearBtn = document.getElementById('clearBtn');
+const statusEl = document.getElementById('status');
+const apiUrlInput = document.getElementById('apiUrl');
+
+let streaming = false;
+let selected = null;        // {x1,y1,x2,y2,class_name} of tracked object
+let selectedCentroid = null; // last known centroid, used to re-match each frame
+let lastDetections = [];
+let pollTimer = null;
+
+apiUrlInput.value = localStorage.getItem('bf_api_url') || '';
+
+function resizeCanvas() {
+  canvas.width = stage.clientWidth;
+  canvas.height = stage.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+
+startBtn.onclick = async () => {
+  if (!apiUrlInput.value.trim()) {
+    statusEl.textContent = '⚠️ ჯერ ჩაწერე backend-ის URL';
+    return;
+  }
+  localStorage.setItem('bf_api_url', apiUrlInput.value.trim());
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }
+    });
+    video.srcObject = stream;
+    streaming = true;
+    resizeCanvas();
+    statusEl.textContent = 'კამერა ჩართულია — დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს';
+    startPolling();
+  } catch (err) {
+    statusEl.textContent = '❌ კამერაზე წვდომა ვერ მოხერხდა: ' + err.message;
+  }
+};
+
+clearBtn.onclick = () => {
+  selected = null;
+  selectedCentroid = null;
+  statusEl.textContent = 'მონიშვნა მოიხსნა — დააჭირე ახალ ობიექტს';
+};
+
+canvas.onclick = (e) => {
+  if (!lastDetections.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const clickX = (e.clientX - rect.left) / rect.width * video.videoWidth;
+  const clickY = (e.clientY - rect.top) / rect.height * video.videoHeight;
+
+  // find detection whose box contains the click, else nearest centroid
+  let best = null, bestDist = Infinity;
+  for (const d of lastDetections) {
+    const cx = (d.x1 + d.x2) / 2;
+    const cy = (d.y1 + d.y2) / 2;
+    const inside = clickX >= d.x1 && clickX <= d.x2 && clickY >= d.y1 && clickY <= d.y2;
+    const dist = Math.hypot(cx - clickX, cy - clickY);
+    if (inside) { best = d; bestDist = -1; break; }
+    if (dist < bestDist) { bestDist = dist; best = d; }
+  }
+  if (best) {
+    selected = best;
+    selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
+    statusEl.textContent = `მონიშნულია: ${best.class_name} (${(best.confidence*100).toFixed(0)}%)`;
+  }
+};
+
+function drawBox(d, color, label) {
+  const sx = canvas.width / video.videoWidth;
+  const sy = canvas.height / video.videoHeight;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(d.x1 * sx, d.y1 * sy, (d.x2 - d.x1) * sx, (d.y2 - d.y1) * sy);
+  if (label) {
+    ctx.fillStyle = color;
+    ctx.font = '13px sans-serif';
+    ctx.fillText(label, d.x1 * sx + 2, Math.max(12, d.y1 * sy - 4));
+  }
+}
+
+async function captureAndSend() {
+  if (!streaming) return;
+  const off = document.createElement('canvas');
+  off.width = video.videoWidth;
+  off.height = video.videoHeight;
+  off.getContext('2d').drawImage(video, 0, 0);
+
+  const blob = await new Promise(res => off.toBlob(res, 'image/jpeg', 0.7));
+  const form = new FormData();
+  form.append('file', blob, 'frame.jpg');
+
+  try {
+    const base = apiUrlInput.value.trim().replace(/\/$/, '');
+    const res = await fetch(`${base}/detect`, { method: 'POST', body: form });
+    const data = await res.json();
+    lastDetections = data.detections || [];
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // draw all detections in green
+    for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name);
+
+    // re-match selected object to nearest detection this frame (simple tracking)
+    if (selectedCentroid && lastDetections.length) {
+      let best = null, bestDist = Infinity;
+      for (const d of lastDetections) {
+        const cx = (d.x1 + d.x2) / 2;
+        const cy = (d.y1 + d.y2) / 2;
+        const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
+        if (dist < bestDist) { bestDist = dist; best = d; }
+      }
+      // only accept match if it's reasonably close (avoid snapping to unrelated object)
+      const maxJump = Math.max(video.videoWidth, video.videoHeight) * 0.25;
+      if (best && bestDist < maxJump) {
+        selected = best;
+        selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
+        drawBox(best, '#ff5c5c', '🎯 ' + best.class_name);
+      }
+    }
+  } catch (err) {
+    statusEl.textContent = '⚠️ backend-თან კავშირის შეცდომა: ' + err.message;
+  }
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(captureAndSend, 700); // ~1.4 fps, gentle on free-tier backend
+}
+</script>
+</body>
+</html>
