@@ -105,7 +105,7 @@
 <div class="status" id="status">
   1. ჩაწერე backend-ის URL &nbsp;→&nbsp; 2. ჩართე კამერა &nbsp;→&nbsp; 3. დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს
 </div>
-<div class="legend">🟩 ყველა აღმოჩენილი ობიექტი &nbsp;&nbsp; 🟥 მონიშნული / თრექირებული ობიექტი</div>
+<div class="legend">🟩 ყველა აღმოჩენილი ობიექტი &nbsp;&nbsp; 🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა</div>
 
 <script>
 const video = document.getElementById('video');
@@ -118,8 +118,10 @@ const statusEl = document.getElementById('status');
 const apiUrlInput = document.getElementById('apiUrl');
 
 let streaming = false;
-let selected = null;        // {x1,y1,x2,y2,class_name} of tracked object
+let selected = null;         // last known box {x1,y1,x2,y2,class_name} of tracked object
 let selectedCentroid = null; // last known centroid, used to re-match each frame
+let selectedSize = null;     // last known {w,h}, used to scale the search radius
+let isLost = false;          // true when we couldn't re-match this frame
 let lastDetections = [];
 let pollTimer = null;
 
@@ -154,6 +156,10 @@ startBtn.onclick = async () => {
 clearBtn.onclick = () => {
   selected = null;
   selectedCentroid = null;
+  selectedSize = null;
+  isLost = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name);
   statusEl.textContent = 'მონიშვნა მოიხსნა — დააჭირე ახალ ობიექტს';
 };
 
@@ -176,19 +182,24 @@ canvas.onclick = (e) => {
   if (best) {
     selected = best;
     selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
-    statusEl.textContent = `მონიშნულია: ${best.class_name} (${(best.confidence*100).toFixed(0)}%)`;
+    selectedSize = { w: best.x2 - best.x1, h: best.y2 - best.y1 };
+    isLost = false;
+    statusEl.textContent = `🟢 მონიშნულია: ${best.class_name} (${(best.confidence*100).toFixed(0)}%)`;
   }
 };
 
-function drawBox(d, color, label) {
+function drawBox(d, color, label, opts = {}) {
   const sx = canvas.width / video.videoWidth;
   const sy = canvas.height / video.videoHeight;
+  ctx.save();
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = opts.lineWidth || 2;
+  if (opts.dashed) ctx.setLineDash([8, 6]);
   ctx.strokeRect(d.x1 * sx, d.y1 * sy, (d.x2 - d.x1) * sx, (d.y2 - d.y1) * sy);
+  ctx.restore();
   if (label) {
     ctx.fillStyle = color;
-    ctx.font = '13px sans-serif';
+    ctx.font = (opts.lineWidth > 2 ? 'bold ' : '') + '13px sans-serif';
     ctx.fillText(label, d.x1 * sx + 2, Math.max(12, d.y1 * sy - 4));
   }
 }
@@ -212,25 +223,47 @@ async function captureAndSend() {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // draw all detections in green
-    for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name);
+    // draw all other detections as thin green boxes (context only)
+    for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name, { lineWidth: 1 });
 
-    // re-match selected object to nearest detection this frame (simple tracking)
+    // re-match the tracked object to the closest detection this frame
     if (selectedCentroid && lastDetections.length) {
-      let best = null, bestDist = Infinity;
+      // search radius scales with the object's own size, so a big drone can
+      // "jump" further between frames than a small one — with a sensible floor
+      const sizeBasis = selectedSize ? Math.max(selectedSize.w, selectedSize.h) : 0;
+      const maxJump = Math.max(sizeBasis * 3, Math.max(video.videoWidth, video.videoHeight) * 0.2);
+
+      let best = null, bestScore = Infinity;
       for (const d of lastDetections) {
         const cx = (d.x1 + d.x2) / 2;
         const cy = (d.y1 + d.y2) / 2;
         const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
-        if (dist < bestDist) { bestDist = dist; best = d; }
+        if (dist > maxJump) continue;
+        // prefer same-class matches when distances are close
+        const classPenalty = (selected && d.class_name === selected.class_name) ? 0 : maxJump * 0.3;
+        const score = dist + classPenalty;
+        if (score < bestScore) { bestScore = score; best = d; }
       }
-      // only accept match if it's reasonably close (avoid snapping to unrelated object)
-      const maxJump = Math.max(video.videoWidth, video.videoHeight) * 0.25;
-      if (best && bestDist < maxJump) {
+
+      if (best) {
+        // 🟢 FOUND — update position and draw a solid bright green box
         selected = best;
         selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
-        drawBox(best, '#ff5c5c', '🎯 ' + best.class_name);
+        selectedSize = { w: best.x2 - best.x1, h: best.y2 - best.y1 };
+        isLost = false;
+        drawBox(best, '#2ecc71', '🟢 ' + best.class_name, { lineWidth: 3 });
+        statusEl.textContent = `🟢 ვხედავთ: ${best.class_name}`;
+      } else if (selected) {
+        // 🔴 LOST — keep showing the last known box, in red, dashed
+        isLost = true;
+        drawBox(selected, '#ff5c5c', '🔴 ვეძებ...', { lineWidth: 3, dashed: true });
+        statusEl.textContent = '🔴 ობიექტი დაიკარგა — ვეძებ...';
       }
+    } else if (selected) {
+      // no detections at all this frame — still show last known red box
+      isLost = true;
+      drawBox(selected, '#ff5c5c', '🔴 ვეძებ...', { lineWidth: 3, dashed: true });
+      statusEl.textContent = '🔴 ობიექტი დაიკარგა — ვეძებ...';
     }
   } catch (err) {
     statusEl.textContent = '⚠️ backend-თან კავშირის შეცდომა: ' + err.message;
