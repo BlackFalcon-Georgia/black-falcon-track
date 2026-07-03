@@ -72,7 +72,7 @@ export default function App() {
 
       if (selectedCentroid) {
         const sizeBasis = selectedSize ? Math.max(selectedSize.w, selectedSize.h) : 0;
-        const maxJump = Math.max(sizeBasis * 3, Math.max(data.image_width, data.image_height) * 0.2);
+        const maxJump = Math.max(sizeBasis * 3, Math.max(data.image_width, data.image_height) * 0.15);
 
         let best: Detection | null = null;
         let bestScore = Infinity;
@@ -82,7 +82,15 @@ export default function App() {
           const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
           if (dist > maxJump) continue;
 
-          const classPenalty = (tracked && d.class_name === tracked.class_name) ? 0 : maxJump * 0.3;
+          const sameClass = tracked && d.class_name === tracked.class_name;
+
+          // different-class candidates only count if they're almost exactly
+          // where we last saw the object — otherwise it's probably a
+          // different, unrelated object and we'd rather mark "lost"
+          if (!sameClass) {
+            const tightRadius = Math.max(sizeBasis * 0.6, 20);
+            if (dist > tightRadius) continue;
+          }
 
           let sizePenalty = 0;
           if (selectedSize) {
@@ -93,6 +101,7 @@ export default function App() {
           }
 
           const confBonus = (1 - d.confidence) * maxJump * 0.15;
+          const classPenalty = sameClass ? 0 : maxJump * 0.3;
 
           const score = dist + classPenalty + sizePenalty + confBonus;
           if (score < bestScore) { bestScore = score; best = d; }
