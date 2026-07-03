@@ -44,7 +44,7 @@ export default function App() {
   const [selectedSize, setSelectedSize] = useState<{ w: number; h: number } | null>(null);
   const [tracked, setTracked] = useState<Detection | null>(null);
   const [isLost, setIsLost] = useState(false);
-  const [status, setStatus] = useState("ჩაწერე backend URL და დააჭირე Start-ს");
+  const [status, setStatus] = useState("დააჭირე ▶ დაწყებას, მიმართე ცენტრი ობიექტს და დააჭირე 🎯 მონიშვნას");
 
   const captureLoop = useCallback(async () => {
     if (!cameraRef.current) return;
@@ -137,19 +137,21 @@ export default function App() {
   const sx = SCREEN_W / imgSize.w;
   const sy = STAGE_H / imgSize.h;
 
-  function handleTap(evt: any) {
-    if (!detections.length) return;
-    const { locationX, locationY } = evt.nativeEvent;
-    const clickX = locationX / sx;
-    const clickY = locationY / sy;
+  function selectAtCenter() {
+    if (!detections.length) {
+      setStatus("⚠️ ჯერ არაფერია აღმოჩენილი — მიმართე კამერა ობიექტს");
+      return;
+    }
+    const centerX = imgSize.w / 2;
+    const centerY = imgSize.h / 2;
 
     let best: Detection | null = null;
     let bestDist = Infinity;
     for (const d of detections) {
       const cx = (d.x1 + d.x2) / 2;
       const cy = (d.y1 + d.y2) / 2;
-      const inside = clickX >= d.x1 && clickX <= d.x2 && clickY >= d.y1 && clickY <= d.y2;
-      const dist = Math.hypot(cx - clickX, cy - clickY);
+      const inside = centerX >= d.x1 && centerX <= d.x2 && centerY >= d.y1 && centerY <= d.y2;
+      const dist = Math.hypot(cx - centerX, cy - centerY);
       if (inside) { best = d; bestDist = -1; break; }
       if (dist < bestDist) { bestDist = dist; best = d; }
     }
@@ -168,17 +170,8 @@ export default function App() {
 
       <View style={{ width: SCREEN_W, height: STAGE_H }}>
         <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
-        <View style={StyleSheet.absoluteFill} onTouchEnd={handleTap}>
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
           <Svg width={SCREEN_W} height={STAGE_H}>
-            {detections.map((d, i) => (
-              <React.Fragment key={i}>
-                <Rect
-                  x={d.x1 * sx} y={d.y1 * sy}
-                  width={(d.x2 - d.x1) * sx} height={(d.y2 - d.y1) * sy}
-                  stroke="#2ecc71" strokeWidth={2} fill="none"
-                />
-              </React.Fragment>
-            ))}
             {tracked && (
               <Rect
                 x={tracked.x1 * sx} y={tracked.y1 * sy}
@@ -189,6 +182,12 @@ export default function App() {
               />
             )}
           </Svg>
+          {/* center crosshair — line up the target here, then tap "მონიშვნა" */}
+          <View style={styles.crosshair}>
+            <View style={styles.crosshairH} />
+            <View style={styles.crosshairV} />
+            <View style={styles.crosshairDot} />
+          </View>
         </View>
       </View>
 
@@ -201,6 +200,9 @@ export default function App() {
         >
           <Text style={styles.btnText}>{running ? "⏸ გაჩერება" : "▶ დაწყება"}</Text>
         </TouchableOpacity>
+        <TouchableOpacity style={styles.btn} onPress={selectAtCenter}>
+          <Text style={styles.btnText}>🎯 მონიშვნა</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.btn}
           onPress={() => {
@@ -210,7 +212,7 @@ export default function App() {
             setIsLost(false);
           }}
         >
-          <Text style={styles.btnText}>✖ მონიშვნის მოხსნა</Text>
+          <Text style={styles.btnText}>✖ მოხსნა</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -235,4 +237,20 @@ const styles = StyleSheet.create({
   },
   btnActive: { backgroundColor: "#ff5c5c", borderColor: "#ff5c5c" },
   btnText: { color: "#e6edf3", fontWeight: "600" },
+  crosshair: {
+    position: "absolute", top: "50%", left: "50%",
+    width: 34, height: 34, marginLeft: -17, marginTop: -17,
+  },
+  crosshairH: {
+    position: "absolute", top: 16, left: 2, right: 2, height: 2,
+    backgroundColor: "rgba(255,255,255,0.85)",
+  },
+  crosshairV: {
+    position: "absolute", left: 16, top: 2, bottom: 2, width: 2,
+    backgroundColor: "rgba(255,255,255,0.85)",
+  },
+  crosshairDot: {
+    position: "absolute", top: 14, left: 14, width: 6, height: 6,
+    borderRadius: 3, backgroundColor: "#4dd0ff",
+  },
 });
