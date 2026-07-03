@@ -51,7 +51,31 @@
     width: 100%;
     height: 100%;
   }
-  canvas { pointer-events: auto; }
+  canvas { pointer-events: none; }
+  .crosshair {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 34px; height: 34px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 5;
+  }
+  .crosshair::before, .crosshair::after {
+    content: '';
+    position: absolute;
+    background: rgba(255,255,255,0.85);
+  }
+  .crosshair::before { top: 50%; left: 2px; right: 2px; height: 2px; transform: translateY(-50%); }
+  .crosshair::after { left: 50%; top: 2px; bottom: 2px; width: 2px; transform: translateX(-50%); }
+  .crosshair-dot {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 6px; height: 6px;
+    background: #4dd0ff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 6px rgba(77,208,255,0.9);
+  }
   .controls {
     display: flex;
     gap: 10px;
@@ -94,17 +118,19 @@
 <div class="stage" id="stage">
   <video id="video" autoplay playsinline muted></video>
   <canvas id="overlay"></canvas>
+  <div class="crosshair"><div class="crosshair-dot"></div></div>
 </div>
 
 <div class="controls">
   <button id="startBtn">📷 კამერის ჩართვა</button>
+  <button id="selectBtn">🎯 მონიშვნა (ცენტრში)</button>
   <button id="clearBtn">✖ მონიშვნის მოხსნა</button>
 </div>
 
 <div class="status" id="status">
-  1. ჩართე კამერა &nbsp;→&nbsp; 2. დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს
+  1. ჩართე კამერა &nbsp;→&nbsp; 2. ცენტრალური წერტილი მიმართე ობიექტს &nbsp;→&nbsp; 3. დააჭირე "🎯 მონიშვნა"
 </div>
-<div class="legend">🟩 ყველა აღმოჩენილი ობიექტი &nbsp;&nbsp; 🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა</div>
+<div class="legend">🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა</div>
 
 <script>
 // Backend API URL — hardcoded so the demo works without any setup.
@@ -116,6 +142,7 @@ const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const stage = document.getElementById('stage');
 const startBtn = document.getElementById('startBtn');
+const selectBtn = document.getElementById('selectBtn');
 const clearBtn = document.getElementById('clearBtn');
 const statusEl = document.getElementById('status');
 
@@ -141,7 +168,7 @@ startBtn.onclick = async () => {
     video.srcObject = stream;
     streaming = true;
     resizeCanvas();
-    statusEl.textContent = 'კამერა ჩართულია — დააჭირე ეკრანზე ობიექტს რომ მოინიშნოს';
+    statusEl.textContent = 'კამერა ჩართულია — მიმართე ცენტრალური წერტილი ობიექტს და დააჭირე "🎯 მონიშვნა"';
     startPolling();
   } catch (err) {
     statusEl.textContent = '❌ კამერაზე წვდომა ვერ მოხერხდა: ' + err.message;
@@ -154,23 +181,23 @@ clearBtn.onclick = () => {
   selectedSize = null;
   isLost = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name);
-  statusEl.textContent = 'მონიშვნა მოიხსნა — დააჭირე ახალ ობიექტს';
+  statusEl.textContent = 'მონიშვნა მოიხსნა — მიმართე ცენტრალური წერტილი ობიექტს და დააჭირე "🎯 მონიშვნა"';
 };
 
-canvas.onclick = (e) => {
-  if (!lastDetections.length) return;
-  const rect = canvas.getBoundingClientRect();
-  const clickX = (e.clientX - rect.left) / rect.width * video.videoWidth;
-  const clickY = (e.clientY - rect.top) / rect.height * video.videoHeight;
+selectBtn.onclick = () => {
+  if (!lastDetections.length) {
+    statusEl.textContent = '⚠️ ჯერ არაფერია აღმოჩენილი — მიმართე კამერა ობიექტს';
+    return;
+  }
+  const centerX = video.videoWidth / 2;
+  const centerY = video.videoHeight / 2;
 
-  // find detection whose box contains the click, else nearest centroid
   let best = null, bestDist = Infinity;
   for (const d of lastDetections) {
     const cx = (d.x1 + d.x2) / 2;
     const cy = (d.y1 + d.y2) / 2;
-    const inside = clickX >= d.x1 && clickX <= d.x2 && clickY >= d.y1 && clickY <= d.y2;
-    const dist = Math.hypot(cx - clickX, cy - clickY);
+    const inside = centerX >= d.x1 && centerX <= d.x2 && centerY >= d.y1 && centerY <= d.y2;
+    const dist = Math.hypot(cx - centerX, cy - centerY);
     if (inside) { best = d; bestDist = -1; break; }
     if (dist < bestDist) { bestDist = dist; best = d; }
   }
@@ -217,9 +244,6 @@ async function captureAndSend() {
     lastDetections = data.detections || [];
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // draw all other detections as thin green boxes (context only)
-    for (const d of lastDetections) drawBox(d, '#2ecc71', d.class_name, { lineWidth: 1 });
 
     // re-match the tracked object to the closest detection this frame
     if (selectedCentroid && lastDetections.length) {
