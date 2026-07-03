@@ -250,7 +250,7 @@ async function captureAndSend() {
       // search radius scales with the object's own size, so a big drone can
       // "jump" further between frames than a small one — with a sensible floor
       const sizeBasis = selectedSize ? Math.max(selectedSize.w, selectedSize.h) : 0;
-      const maxJump = Math.max(sizeBasis * 3, Math.max(video.videoWidth, video.videoHeight) * 0.2);
+      const maxJump = Math.max(sizeBasis * 3, Math.max(video.videoWidth, video.videoHeight) * 0.15);
 
       let best = null, bestScore = Infinity;
       for (const d of lastDetections) {
@@ -259,12 +259,18 @@ async function captureAndSend() {
         const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
         if (dist > maxJump) continue;
 
-        // prefer same-class matches when distances are close
-        const classPenalty = (selected && d.class_name === selected.class_name) ? 0 : maxJump * 0.3;
+        const sameClass = selected && d.class_name === selected.class_name;
 
-        // penalize detections whose size is wildly different from what we
-        // were just tracking — a real object shouldn't suddenly double or
-        // halve in size between two frames taken ~0.7s apart
+        // if it's a DIFFERENT class than what we're tracking, only accept
+        // it as a match when it's almost exactly where we last saw the
+        // object (tight radius) — otherwise this is very likely a
+        // different, unrelated object and we should mark "lost" instead
+        // of silently jumping onto it
+        if (!sameClass) {
+          const tightRadius = Math.max(sizeBasis * 0.6, 20);
+          if (dist > tightRadius) continue;
+        }
+
         let sizePenalty = 0;
         if (selectedSize) {
           const dw = d.x2 - d.x1, dh = d.y2 - d.y1;
@@ -273,8 +279,8 @@ async function captureAndSend() {
           if (ratio > 2.2) sizePenalty = maxJump * 0.6;
         }
 
-        // slightly favor higher-confidence detections
         const confBonus = (1 - d.confidence) * maxJump * 0.15;
+        const classPenalty = sameClass ? 0 : maxJump * 0.3;
 
         const score = dist + classPenalty + sizePenalty + confBonus;
         if (score < bestScore) { bestScore = score; best = d; }
