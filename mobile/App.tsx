@@ -81,8 +81,20 @@ export default function App() {
           const cy = (d.y1 + d.y2) / 2;
           const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
           if (dist > maxJump) continue;
+
           const classPenalty = (tracked && d.class_name === tracked.class_name) ? 0 : maxJump * 0.3;
-          const score = dist + classPenalty;
+
+          let sizePenalty = 0;
+          if (selectedSize) {
+            const dw = d.x2 - d.x1, dh = d.y2 - d.y1;
+            const ratio = Math.max(dw / selectedSize.w, selectedSize.w / dw,
+                                    dh / selectedSize.h, selectedSize.h / dh);
+            if (ratio > 2.2) sizePenalty = maxJump * 0.6;
+          }
+
+          const confBonus = (1 - d.confidence) * maxJump * 0.15;
+
+          const score = dist + classPenalty + sizePenalty + confBonus;
           if (score < bestScore) { bestScore = score; best = d; }
         }
 
