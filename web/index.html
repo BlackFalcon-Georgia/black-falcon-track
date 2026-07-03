@@ -234,9 +234,25 @@ async function captureAndSend() {
         const cy = (d.y1 + d.y2) / 2;
         const dist = Math.hypot(cx - selectedCentroid.x, cy - selectedCentroid.y);
         if (dist > maxJump) continue;
+
         // prefer same-class matches when distances are close
         const classPenalty = (selected && d.class_name === selected.class_name) ? 0 : maxJump * 0.3;
-        const score = dist + classPenalty;
+
+        // penalize detections whose size is wildly different from what we
+        // were just tracking — a real object shouldn't suddenly double or
+        // halve in size between two frames taken ~0.7s apart
+        let sizePenalty = 0;
+        if (selectedSize) {
+          const dw = d.x2 - d.x1, dh = d.y2 - d.y1;
+          const ratio = Math.max(dw / selectedSize.w, selectedSize.w / dw,
+                                  dh / selectedSize.h, selectedSize.h / dh);
+          if (ratio > 2.2) sizePenalty = maxJump * 0.6;
+        }
+
+        // slightly favor higher-confidence detections
+        const confBonus = (1 - d.confidence) * maxJump * 0.15;
+
+        const score = dist + classPenalty + sizePenalty + confBonus;
         if (score < bestScore) { bestScore = score; best = d; }
       }
 
