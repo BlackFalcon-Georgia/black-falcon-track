@@ -45,6 +45,15 @@
     overflow: hidden;
     border: 1px solid #232b36;
   }
+  /* When the phone is rotated to landscape, switch to a wider HD-style
+     16:9 frame so the video uses the extra horizontal space properly */
+  @media (orientation: landscape) {
+    .stage {
+      width: min(960px, 88vw);
+      max-height: 78vh;
+      aspect-ratio: 16 / 9;
+    }
+  }
   video, canvas {
     position: absolute;
     top: 0; left: 0;
@@ -78,10 +87,14 @@
   }
   .controls {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     margin-top: 16px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: center;
+    width: 100%;
+    max-width: 720px;
+    overflow-x: auto;
+    padding-bottom: 4px;
   }
   button, input[type=text] {
     background: var(--panel);
@@ -91,6 +104,12 @@
     border-radius: 8px;
     font-size: 14px;
     cursor: pointer;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  @media (max-width: 480px) {
+    .controls { gap: 6px; }
+    button { padding: 9px 10px; font-size: 12.5px; }
   }
   button:hover { border-color: var(--accent2); }
   button.active { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
@@ -159,6 +178,7 @@ function resizeCanvas() {
   canvas.height = stage.clientHeight;
 }
 window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
 
 startBtn.onclick = async () => {
   try {
@@ -191,6 +211,9 @@ selectBtn.onclick = () => {
   }
   const centerX = video.videoWidth / 2;
   const centerY = video.videoHeight / 2;
+  // how far from the crosshair we're willing to accept a match —
+  // tight enough that it never grabs an unrelated object across the frame
+  const maxPickRadius = Math.max(video.videoWidth, video.videoHeight) * 0.12;
 
   let best = null, bestDist = Infinity;
   for (const d of lastDetections) {
@@ -201,12 +224,18 @@ selectBtn.onclick = () => {
     if (inside) { best = d; bestDist = -1; break; }
     if (dist < bestDist) { bestDist = dist; best = d; }
   }
+
+  // reject the match if it's neither under the crosshair nor close to it
+  if (best && bestDist > maxPickRadius) best = null;
+
   if (best) {
     selected = best;
     selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
     selectedSize = { w: best.x2 - best.x1, h: best.y2 - best.y1 };
     isLost = false;
     statusEl.textContent = `🟢 მონიშნულია: ${best.class_name} (${(best.confidence*100).toFixed(0)}%)`;
+  } else {
+    statusEl.textContent = '⚠️ ცენტრში ობიექტი ვერ მოიძებნა — მიუახლოვდი ან უკეთ დაამიზნე';
   }
 };
 
