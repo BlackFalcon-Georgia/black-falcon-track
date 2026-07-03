@@ -93,6 +93,19 @@ async def detect(file: UploadFile = File(...)):
         class_name = model.names[cls_id]
         conf = float(box.conf[0])
         x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+
+        # Filter out low-confidence noise
+        if conf < 0.40:
+            continue
+
+        # Filter out implausibly huge boxes (YOLO sometimes emits a
+        # near-full-frame low-quality box) — real tracked objects rarely
+        # fill more than ~85% of the frame in this use case.
+        box_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        frame_area = image.width * image.height
+        if frame_area > 0 and (box_area / frame_area) > 0.85:
+            continue
+
         detections.append(
             Detection(
                 class_name=class_name,
