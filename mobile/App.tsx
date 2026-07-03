@@ -153,6 +153,7 @@ export default function App() {
     }
     const centerX = imgSize.w / 2;
     const centerY = imgSize.h / 2;
+    const maxPickRadius = Math.max(imgSize.w, imgSize.h) * 0.12;
 
     let best: Detection | null = null;
     let bestDist = Infinity;
@@ -164,12 +165,17 @@ export default function App() {
       if (inside) { best = d; bestDist = -1; break; }
       if (dist < bestDist) { bestDist = dist; best = d; }
     }
+
+    if (best && bestDist > maxPickRadius) best = null;
+
     if (best) {
       setTracked(best);
       setSelectedCentroid({ x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 });
       setSelectedSize({ w: best.x2 - best.x1, h: best.y2 - best.y1 });
       setIsLost(false);
       setStatus(`🟢 მონიშნულია: ${best.class_name}`);
+    } else {
+      setStatus("⚠️ ცენტრში ობიექტი ვერ მოიძებნა — მიუახლოვდი ან უკეთ დაამიზნე");
     }
   }
 
