@@ -142,6 +142,7 @@
 
 <div class="controls">
   <button id="startBtn">📷 კამერის ჩართვა</button>
+  <button id="modeBtn">🚔 ზოგადი რეჟიმი</button>
   <button id="selectBtn">🎯 მონიშვნა (ცენტრში)</button>
   <button id="clearBtn">✖ მონიშვნის მოხსნა</button>
 </div>
@@ -161,17 +162,31 @@ const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const stage = document.getElementById('stage');
 const startBtn = document.getElementById('startBtn');
+const modeBtn = document.getElementById('modeBtn');
 const selectBtn = document.getElementById('selectBtn');
 const clearBtn = document.getElementById('clearBtn');
 const statusEl = document.getElementById('status');
 
 let streaming = false;
+let detectEndpoint = 'detect'; // 'detect' (general) or 'detect_drone' (custom drone model)
 let selected = null;         // last known box {x1,y1,x2,y2,class_name} of tracked object
 let selectedCentroid = null; // last known centroid, used to re-match each frame
 let selectedSize = null;     // last known {w,h}, used to scale the search radius
+let selectedEmbedding = null; // last known visual "signature", used for re-identification
 let isLost = false;          // true when we couldn't re-match this frame
 let lastDetections = [];
 let pollTimer = null;
+
+function cosineSim(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-6);
+}
 
 function resizeCanvas() {
   canvas.width = stage.clientWidth;
@@ -179,6 +194,24 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
+
+modeBtn.onclick = () => {
+  detectEndpoint = detectEndpoint === 'detect' ? 'detect_drone' : 'detect';
+  const isDrone = detectEndpoint === 'detect_drone';
+  modeBtn.textContent = isDrone ? '🛡️ დრონის რეჟიმი' : '🚔 ზოგადი რეჟიმი';
+  modeBtn.classList.toggle('active', isDrone);
+  // switching model means old boxes/embeddings no longer apply
+  selected = null;
+  selectedCentroid = null;
+  selectedSize = null;
+  selectedEmbedding = null;
+  isLost = false;
+  lastDetections = [];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  statusEl.textContent = isDrone
+    ? '🛡️ დრონის რეჟიმი ჩართულია — ცნობს მხოლოდ დრონებს'
+    : '🚔 ზოგადი რეჟიმი ჩართულია — ცნობს ადამიანებს, მანქანებს და ა.შ.';
+};
 
 startBtn.onclick = async () => {
   try {
@@ -199,6 +232,7 @@ clearBtn.onclick = () => {
   selected = null;
   selectedCentroid = null;
   selectedSize = null;
+  selectedEmbedding = null;
   isLost = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   statusEl.textContent = 'მონიშვნა მოიხსნა — მიმართე ცენტრალური წერტილი ობიექტს და დააჭირე "🎯 მონიშვნა"';
@@ -232,6 +266,7 @@ selectBtn.onclick = () => {
     selected = best;
     selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
     selectedSize = { w: best.x2 - best.x1, h: best.y2 - best.y1 };
+    selectedEmbedding = best.embedding || null;
     isLost = false;
     statusEl.textContent = `🟢 მონიშნულია: ${best.class_name} (${(best.confidence*100).toFixed(0)}%)`;
   } else {
@@ -268,7 +303,7 @@ async function captureAndSend() {
 
   try {
     const base = API_URL.replace(/\/$/, '');
-    const res = await fetch(`${base}/detect`, { method: 'POST', body: form });
+    const res = await fetch(`${base}/${detectEndpoint}`, { method: 'POST', body: form });
     const data = await res.json();
     lastDetections = data.detections || [];
 
@@ -316,18 +351,42 @@ async function captureAndSend() {
       }
 
       if (best) {
-        // 🟢 FOUND — update position and draw a solid bright green box
+        // 🟢 FOUND (by position) — update position and draw a solid bright green box
         selected = best;
         selectedCentroid = { x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 };
         selectedSize = { w: best.x2 - best.x1, h: best.y2 - best.y1 };
+        selectedEmbedding = best.embedding || selectedEmbedding;
         isLost = false;
         drawBox(best, '#2ecc71', '🟢 ' + best.class_name, { lineWidth: 3 });
         statusEl.textContent = `🟢 ვხედავთ: ${best.class_name}`;
-      } else if (selected) {
-        // 🔴 LOST — keep showing the last known box, in red, dashed
-        isLost = true;
-        drawBox(selected, '#ff5c5c', '🔴 ვეძებ...', { lineWidth: 3, dashed: true });
-        statusEl.textContent = '🔴 ობიექტი დაიკარგა — ვეძებ...';
+      } else {
+        // position-based match failed — try re-identifying the object by
+        // its visual signature anywhere in the frame (it may have moved
+        // far, or briefly left and re-entered at a different spot)
+        let reid = null, reidSim = 0;
+        if (selectedEmbedding && selected) {
+          for (const d of lastDetections) {
+            if (d.class_name !== selected.class_name || !d.embedding) continue;
+            const sim = cosineSim(selectedEmbedding, d.embedding);
+            if (sim > reidSim) { reidSim = sim; reid = d; }
+          }
+        }
+
+        if (reid && reidSim > 0.92) {
+          // 🟢 RE-IDENTIFIED — same visual signature, new position
+          selected = reid;
+          selectedCentroid = { x: (reid.x1 + reid.x2) / 2, y: (reid.y1 + reid.y2) / 2 };
+          selectedSize = { w: reid.x2 - reid.x1, h: reid.y2 - reid.y1 };
+          selectedEmbedding = reid.embedding || selectedEmbedding;
+          isLost = false;
+          drawBox(reid, '#2ecc71', '🟢 ' + reid.class_name + ' (ID)', { lineWidth: 3 });
+          statusEl.textContent = `🟢 ხელახლა ვცანით: ${reid.class_name}`;
+        } else if (selected) {
+          // 🔴 LOST — keep showing the last known box, in red, dashed
+          isLost = true;
+          drawBox(selected, '#ff5c5c', '🔴 ვეძებ...', { lineWidth: 3, dashed: true });
+          statusEl.textContent = '🔴 ობიექტი დაიკარგა — ვეძებ...';
+        }
       }
     } else if (selected) {
       // no detections at all this frame — still show last known red box
