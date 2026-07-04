@@ -31,17 +31,31 @@ type Detection = {
   class_name: string;
   confidence: number;
   x1: number; y1: number; x2: number; y2: number;
+  embedding?: number[];
 };
+
+function cosineSim(a: number[] | null, b: number[] | null | undefined): number {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-6);
+}
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
 
   const [running, setRunning] = useState(false);
+  const [detectEndpoint, setDetectEndpoint] = useState<"detect" | "detect_drone">("detect");
   const [detections, setDetections] = useState<Detection[]>([]);
   const [imgSize, setImgSize] = useState({ w: 1, h: 1 });
   const [selectedCentroid, setSelectedCentroid] = useState<{ x: number; y: number } | null>(null);
   const [selectedSize, setSelectedSize] = useState<{ w: number; h: number } | null>(null);
+  const [selectedEmbedding, setSelectedEmbedding] = useState<number[] | null>(null);
   const [tracked, setTracked] = useState<Detection | null>(null);
   const [isLost, setIsLost] = useState(false);
   const [status, setStatus] = useState("დააჭირე ▶ დაწყებას, მიმართე ცენტრი ობიექტს და დააჭირე 🎯 მონიშვნას");
@@ -64,7 +78,7 @@ export default function App() {
       } as any);
 
       const base = API_URL.replace(/\/$/, "");
-      const res = await fetch(`${base}/detect`, { method: "POST", body: form });
+      const res = await fetch(`${base}/${detectEndpoint}`, { method: "POST", body: form });
       const data = await res.json();
 
       setDetections(data.detections || []);
@@ -108,22 +122,41 @@ export default function App() {
         }
 
         if (best) {
-          // 🟢 FOUND
+          // 🟢 FOUND (by position)
           setTracked(best);
           setSelectedCentroid({ x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 });
           setSelectedSize({ w: best.x2 - best.x1, h: best.y2 - best.y1 });
+          setSelectedEmbedding(best.embedding || selectedEmbedding);
           setIsLost(false);
           setStatus(`🟢 ვხედავთ: ${best.class_name}`);
         } else {
-          // 🔴 LOST — keep last known box, don't move it
-          setIsLost(true);
-          setStatus("🔴 ობიექტი დაიკარგა — ვეძებ...");
+          // position-based match failed — try re-identifying by visual signature
+          let reid: Detection | null = null, reidSim = 0;
+          if (selectedEmbedding && tracked) {
+            for (const d of (data.detections || []) as Detection[]) {
+              if (d.class_name !== tracked.class_name || !d.embedding) continue;
+              const sim = cosineSim(selectedEmbedding, d.embedding);
+              if (sim > reidSim) { reidSim = sim; reid = d; }
+            }
+          }
+
+          if (reid && reidSim > 0.92) {
+            setTracked(reid);
+            setSelectedCentroid({ x: (reid.x1 + reid.x2) / 2, y: (reid.y1 + reid.y2) / 2 });
+            setSelectedSize({ w: reid.x2 - reid.x1, h: reid.y2 - reid.y1 });
+            setSelectedEmbedding(reid.embedding || selectedEmbedding);
+            setIsLost(false);
+            setStatus(`🟢 ხელახლა ვცანით: ${reid.class_name}`);
+          } else {
+            setIsLost(true);
+            setStatus("🔴 ობიექტი დაიკარგა — ვეძებ...");
+          }
         }
       }
     } catch (e) {
       setStatus("⚠️ backend-თან კავშირის შეცდომა");
     }
-  }, [selectedCentroid, selectedSize, tracked]);
+  }, [selectedCentroid, selectedSize, selectedEmbedding, tracked, detectEndpoint]);
 
   useEffect(() => {
     if (!running) return;
@@ -172,6 +205,7 @@ export default function App() {
       setTracked(best);
       setSelectedCentroid({ x: (best.x1 + best.x2) / 2, y: (best.y1 + best.y2) / 2 });
       setSelectedSize({ w: best.x2 - best.x1, h: best.y2 - best.y1 });
+      setSelectedEmbedding(best.embedding || null);
       setIsLost(false);
       setStatus(`🟢 მონიშნულია: ${best.class_name}`);
     } else {
@@ -215,6 +249,22 @@ export default function App() {
         >
           <Text style={styles.btnText}>{running ? "⏸ გაჩერება" : "▶ დაწყება"}</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.btn, detectEndpoint === "detect_drone" && styles.btnActive]}
+          onPress={() => {
+            setDetectEndpoint(m => m === "detect" ? "detect_drone" : "detect");
+            setTracked(null);
+            setSelectedCentroid(null);
+            setSelectedSize(null);
+            setSelectedEmbedding(null);
+            setIsLost(false);
+            setDetections([]);
+          }}
+        >
+          <Text style={styles.btnText}>
+            {detectEndpoint === "detect_drone" ? "🛡️ დრონი" : "🚔 ზოგადი"}
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.btn} onPress={selectAtCenter}>
           <Text style={styles.btnText}>🎯 მონიშვნა</Text>
         </TouchableOpacity>
@@ -224,6 +274,7 @@ export default function App() {
             setTracked(null);
             setSelectedCentroid(null);
             setSelectedSize(null);
+            setSelectedEmbedding(null);
             setIsLost(false);
           }}
         >
