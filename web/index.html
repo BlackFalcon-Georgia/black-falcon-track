@@ -150,7 +150,7 @@
 <div class="status" id="status">
   1. ჩართე კამერა &nbsp;→&nbsp; 2. ცენტრალური წერტილი მიმართე ობიექტს &nbsp;→&nbsp; 3. დააჭირე "🎯 მონიშვნა"
 </div>
-<div class="legend">🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა</div>
+<div class="legend">🟢 მონიშნული — ვხედავთ &nbsp;&nbsp; 🔴 მონიშნული — დაიკარგა &nbsp;&nbsp; 🔵 ცისფერი კვადრატები — მანძილის საზომი (rangefinder)</div>
 
 <script>
 // Backend API URL — hardcoded so the demo works without any setup.
@@ -166,6 +166,51 @@ const modeBtn = document.getElementById('modeBtn');
 const selectBtn = document.getElementById('selectBtn');
 const clearBtn = document.getElementById('clearBtn');
 const statusEl = document.getElementById('status');
+
+// Rangefinder — იგივე მათემატიკა, რასაც simulation/vision_bridge.py იყენებს,
+// უბრალოდ ვიზუალურად ვხატავთ ბრაუზერში (monocular distance estimation)
+const CAMERA_HFOV_DEG = 60.0;
+const KNOWN_WIDTH_M = { detect: 1.8, detect_drone: 0.45 }; // car vs drone
+const RANGEFINDER_RINGS_M = [5, 10, 20, 50];
+
+function focalLengthPx(imageWidthPx) {
+  const hfovRad = CAMERA_HFOV_DEG * Math.PI / 180;
+  return (imageWidthPx / 2) / Math.tan(hfovRad / 2);
+}
+
+function estimateDistanceM(boxWidthPx, imageWidthPx, className) {
+  if (boxWidthPx <= 0) return Infinity;
+  const realWidthM = KNOWN_WIDTH_M[detectEndpoint] || 1.0;
+  const focalPx = focalLengthPx(imageWidthPx);
+  return (realWidthM * focalPx) / boxWidthPx;
+}
+
+function ringBoxWidthPx(distanceM, imageWidthPx) {
+  const realWidthM = KNOWN_WIDTH_M[detectEndpoint] || 1.0;
+  const focalPx = focalLengthPx(imageWidthPx);
+  return (realWidthM * focalPx) / distanceM;
+}
+
+function drawRangefinderRings() {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const sx = canvas.width / video.videoWidth;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(77, 208, 255, 0.35)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = 'rgba(77, 208, 255, 0.7)';
+
+  for (const distM of RANGEFINDER_RINGS_M) {
+    const boxWidthPx = ringBoxWidthPx(distM, video.videoWidth) * sx;
+    if (boxWidthPx < 4 || boxWidthPx > canvas.width * 1.5) continue;
+    const half = boxWidthPx / 2;
+    ctx.strokeRect(cx - half, cy - half, boxWidthPx, boxWidthPx);
+    ctx.fillText(`${distM}მ`, cx - half + 2, cy - half - 3);
+  }
+  ctx.restore();
+}
 
 let streaming = false;
 let detectEndpoint = 'detect'; // 'detect' (general) or 'detect_drone' (custom drone model)
@@ -208,6 +253,7 @@ modeBtn.onclick = () => {
   isLost = false;
   lastDetections = [];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (streaming) drawRangefinderRings();
   statusEl.textContent = isDrone
     ? '🛡️ დრონის რეჟიმი ჩართულია — ცნობს მხოლოდ დრონებს'
     : '🚔 ზოგადი რეჟიმი ჩართულია — ცნობს ადამიანებს, მანქანებს და ა.შ.';
@@ -235,6 +281,7 @@ clearBtn.onclick = () => {
   selectedEmbedding = null;
   isLost = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawRangefinderRings();
   statusEl.textContent = 'მონიშვნა მოიხსნა — მიმართე ცენტრალური წერტილი ობიექტს და დააჭირე "🎯 მონიშვნა"';
 };
 
@@ -308,6 +355,7 @@ async function captureAndSend() {
     lastDetections = data.detections || [];
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawRangefinderRings();
 
     // re-match the tracked object to the closest detection this frame
     if (selectedCentroid && lastDetections.length) {
@@ -358,7 +406,8 @@ async function captureAndSend() {
         selectedEmbedding = best.embedding || selectedEmbedding;
         isLost = false;
         drawBox(best, '#2ecc71', '🟢 ' + best.class_name, { lineWidth: 3 });
-        statusEl.textContent = `🟢 ვხედავთ: ${best.class_name}`;
+        const distM = estimateDistanceM(best.x2 - best.x1, video.videoWidth, best.class_name);
+        statusEl.textContent = `🟢 ვხედავთ: ${best.class_name}  —  ~${distM.toFixed(1)}მ`;
       } else {
         // position-based match failed — try re-identifying the object by
         // its visual signature anywhere in the frame (it may have moved
@@ -380,7 +429,8 @@ async function captureAndSend() {
           selectedEmbedding = reid.embedding || selectedEmbedding;
           isLost = false;
           drawBox(reid, '#2ecc71', '🟢 ' + reid.class_name + ' (ID)', { lineWidth: 3 });
-          statusEl.textContent = `🟢 ხელახლა ვცანით: ${reid.class_name}`;
+          const reidDistM = estimateDistanceM(reid.x2 - reid.x1, video.videoWidth, reid.class_name);
+          statusEl.textContent = `🟢 ხელახლა ვცანით: ${reid.class_name}  —  ~${reidDistM.toFixed(1)}მ`;
         } else if (selected) {
           // 🔴 LOST — keep showing the last known box, in red, dashed
           isLost = true;
