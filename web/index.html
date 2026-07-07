@@ -240,11 +240,18 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
 
+const MODES = [
+  { key: 'detect', label: '🚔 ზოგადი რეჟიმი' },
+  { key: 'detect_drone', label: '🛡️ დრონის რეჟიმი' },
+  { key: 'detect_plate', label: '🚗 ნომრების ამოცნობა' },
+];
+
 modeBtn.onclick = () => {
-  detectEndpoint = detectEndpoint === 'detect' ? 'detect_drone' : 'detect';
-  const isDrone = detectEndpoint === 'detect_drone';
-  modeBtn.textContent = isDrone ? '🛡️ დრონის რეჟიმი' : '🚔 ზოგადი რეჟიმი';
-  modeBtn.classList.toggle('active', isDrone);
+  const currentIdx = MODES.findIndex(m => m.key === detectEndpoint);
+  const next = MODES[(currentIdx + 1) % MODES.length];
+  detectEndpoint = next.key;
+  modeBtn.textContent = next.label;
+  modeBtn.classList.toggle('active', detectEndpoint !== 'detect');
   // switching model means old boxes/embeddings no longer apply
   selected = null;
   selectedCentroid = null;
@@ -254,9 +261,12 @@ modeBtn.onclick = () => {
   lastDetections = [];
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (streaming) drawRangefinderRings();
-  statusEl.textContent = isDrone
-    ? '🛡️ დრონის რეჟიმი ჩართულია — ცნობს მხოლოდ დრონებს'
-    : '🚔 ზოგადი რეჟიმი ჩართულია — ცნობს ადამიანებს, მანქანებს და ა.შ.';
+  const statusByMode = {
+    detect: '🚔 ზოგადი რეჟიმი ჩართულია — ცნობს ადამიანებს, მანქანებს და ა.შ.',
+    detect_drone: '🛡️ დრონის რეჟიმი ჩართულია — ცნობს მხოლოდ დრონებს',
+    detect_plate: '🚗 ნომრების ამოცნობის რეჟიმი — მიმართე მანქანას',
+  };
+  statusEl.textContent = statusByMode[detectEndpoint];
 };
 
 startBtn.onclick = async () => {
@@ -352,6 +362,37 @@ async function captureAndSend() {
     const base = API_URL.replace(/\/$/, '');
     const res = await fetch(`${base}/${detectEndpoint}`, { method: 'POST', body: form });
     const data = await res.json();
+
+    if (detectEndpoint === 'detect_plate') {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawRangefinderRings();
+      const plates = data.plates || [];
+      const sx = canvas.width / video.videoWidth;
+      const sy = canvas.height / video.videoHeight;
+      let statusParts = [];
+      for (const p of plates) {
+        // მანქანის ჩარჩო — ლურჯი
+        ctx.strokeStyle = '#4dd0ff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.car_x1 * sx, p.car_y1 * sy, (p.car_x2 - p.car_x1) * sx, (p.car_y2 - p.car_y1) * sy);
+
+        if (p.status === 'found' && p.plate_text) {
+          // ნომრის ბლოკი — ყვითელი, ტექსტით
+          ctx.strokeStyle = '#f5d90a';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(p.plate_x1 * sx, p.plate_y1 * sy, (p.plate_x2 - p.plate_x1) * sx, (p.plate_y2 - p.plate_y1) * sy);
+          ctx.fillStyle = '#f5d90a';
+          ctx.font = 'bold 14px sans-serif';
+          ctx.fillText(p.plate_text, p.plate_x1 * sx, Math.max(12, p.plate_y1 * sy - 6));
+          statusParts.push(`${p.plate_text} (${(p.plate_confidence*100).toFixed(0)}%)`);
+        }
+      }
+      statusEl.textContent = statusParts.length
+        ? `🚗 ნაპოვნი ნომრები: ${statusParts.join(', ')}`
+        : `🚗 მანქანები: ${plates.length} — ნომერი ვერ იქნა წაკითხული`;
+      return;
+    }
+
     lastDetections = data.detections || [];
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
