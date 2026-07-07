@@ -5,16 +5,19 @@ FastAPI service that receives an image frame, runs object detection,
 and returns bounding boxes for all detected objects. The client
 (web or mobile) handles selection + tracking logic on top of this.
 
-Two detection modes:
+Three detection modes:
   /detect        -> general-purpose (COCO classes: person, car, etc.)
                      used for the police/car-tracking use case.
   /detect_drone  -> our own fine-tuned model, trained specifically to
                      recognize "drone" as its own class.
+  /detect_plate  -> ANPR/LPR — finds "car" boxes, then localizes and
+                     OCRs the license plate within each one.
 
 Endpoints:
   GET  /health           -> simple health check
   POST /detect           -> upload a JPEG frame, get back general detections
   POST /detect_drone     -> upload a JPEG frame, get back drone detections
+  POST /detect_plate     -> upload a JPEG frame, get back car+plate results
 """
 
 import io
@@ -26,6 +29,8 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
+
+from anpr import recognize_plates_in_image, PlateResult
 
 app = FastAPI(title="Black Falcon Detection API")
 
@@ -183,6 +188,42 @@ async def detect_drone(file: UploadFile = File(...)):
 
     return DetectResponse(
         detections=detections,
+        inference_ms=elapsed_ms,
+        image_width=image.width,
+        image_height=image.height,
+    )
+
+
+class PlateDetectResponse(BaseModel):
+    plates: List[PlateResult]
+    inference_ms: float
+    image_width: int
+    image_height: int
+
+
+@app.post("/detect_plate", response_model=PlateDetectResponse)
+async def detect_plate(file: UploadFile = File(...)):
+    """ANPR/LPR — finds all 'car' detections (general model), then
+    localizes and OCRs the license plate within each car's bounding box.
+
+    NOTE: EasyOCR downloads its recognition/detection models on first
+    call (~50-100MB) and holds them in memory afterwards. Combined with
+    the other models, this endpoint significantly raises memory
+    pressure on the free-tier server — test it in isolation first.
+    """
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+
+    start = time.time()
+    model = get_model()
+    detections, _ = run_detection(model, image, min_conf=0.40)
+    car_boxes = [(d.x1, d.y1, d.x2, d.y2) for d in detections if d.class_name == "car"]
+
+    plates = recognize_plates_in_image(image, car_boxes)
+    elapsed_ms = (time.time() - start) * 1000
+
+    return PlateDetectResponse(
+        plates=plates,
         inference_ms=elapsed_ms,
         image_width=image.width,
         image_height=image.height,
